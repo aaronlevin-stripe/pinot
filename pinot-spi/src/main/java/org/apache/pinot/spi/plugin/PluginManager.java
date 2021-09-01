@@ -139,43 +139,59 @@ public class PluginManager {
     _initialized = true;
   }
 
-  private void init(String pluginsRootDir, String pluginsInclude) {
-    if (StringUtils.isEmpty(pluginsRootDir)) {
-      LOGGER.info("Env variable '{}' is not specified. Set this env variable to load additional plugins.",
-          PLUGINS_DIR_PROPERTY_NAME);
+  private void initPluginDir(String pluginsDir, List<String> pluginsToLoad) {
+    if (!new File(pluginsDir).exists()) {
+      LOGGER.warn("Plugins dir [{}] doesn't exist.", pluginsDir);
       return;
-    } else {
-      if (!new File(pluginsRootDir).exists()) {
-        LOGGER.warn("Plugins root dir [{}] doesn't exist.", pluginsRootDir);
-        return;
-      }
-      LOGGER.info("Plugins root dir is [{}]", pluginsRootDir);
     }
-    Collection<File> jarFiles = FileUtils.listFiles(new File(pluginsRootDir), new String[]{JAR_FILE_EXTENSION}, true);
-    List<String> pluginsToLoad = null;
-    if (!StringUtils.isEmpty(pluginsInclude)) {
-      pluginsToLoad = Arrays.asList(pluginsInclude.split(","));
+
+    LOGGER.info("Loading plugins from dir [{}]", pluginsDir);
+    Collection<File> jarFiles = FileUtils.listFiles(new File(pluginsDir), new String[]{JAR_FILE_EXTENSION}, true);
+
+    if(!pluginsToLoad.isEmpty()) {
       LOGGER.info("Trying to load plugins: [{}]", Arrays.toString(pluginsToLoad.toArray()));
     } else {
       LOGGER.info("Please use env variable '{}' to customize plugins to load. Loading all plugins: {}",
           PLUGINS_INCLUDE_PROPERTY_NAME, Arrays.toString(jarFiles.toArray()));
     }
+
     for (File jarFile : jarFiles) {
-      File pluginDir = jarFile.getParentFile();
-      String pluginName = pluginDir.getName();
-      if (pluginsToLoad != null) {
+      File pluginJarDir = jarFile.getParentFile();
+      String pluginName = pluginJarDir.getName();
+      if (!pluginsToLoad.isEmpty()) {
         if (!pluginsToLoad.contains(pluginName)) {
           continue;
         }
       }
+
       try {
-        load(pluginName, pluginDir);
-        LOGGER.info("Successfully Loaded plugin [{}] from dir [{}]", pluginName, pluginDir);
+        load(pluginName, pluginJarDir);
+        LOGGER.info("Successfully Loaded plugin [{}] from dir [{}]", pluginName, pluginJarDir);
       } catch (Exception e) {
-        LOGGER.error("Failed to load plugin [{}] from dir [{}]", pluginName, pluginDir, e);
+        LOGGER.error("Failed to load plugin [{}] from dir [{}]", pluginName, pluginJarDir, e);
       }
     }
-    initRecordReaderClassMap();
+  }
+
+  private void init(String pluginRootDirs, String pluginsInclude) {
+    if (StringUtils.isEmpty(pluginRootDirs)) {
+      LOGGER.info("Env variable '{}' is not specified. Set this env variable to load additional plugins.",
+          PLUGINS_DIR_PROPERTY_NAME);
+      return;
+    } else {
+
+      List<String> pluginDirectories = Arrays.asList(pluginRootDirs.split(","));
+
+      List<String> pluginsToLoad = new ArrayList<>();
+      if (!StringUtils.isEmpty(pluginsInclude)) {
+        Collections.copy(pluginsToLoad, Arrays.asList(pluginsInclude.split(",")));
+      }
+
+      for (String pluginsRootDir : pluginDirectories) {
+        initPluginDir(pluginsRootDir, pluginsToLoad);
+      }
+      initRecordReaderClassMap();
+    }
   }
 
   private void initRecordReaderClassMap() {
@@ -199,8 +215,12 @@ public class PluginManager {
       }
     }
     PluginClassLoader classLoader = createClassLoader(urlList);
+    Plugin plugin = new Plugin(pluginName);
+    if(_registry.containsKey(plugin)) {
+      LOGGER.warn("Plugin [{}] from location [{}] is being loaded more than once", pluginName, directory);
+    }
     LOGGER.info("Successfully loaded plugin [{}] from jar files: {}", pluginName, Arrays.toString(urlList.toArray()));
-    _registry.put(new Plugin(pluginName), classLoader);
+    _registry.put(plugin, classLoader);
   }
 
   private PluginClassLoader createClassLoader(Collection<URL> urlList) {
@@ -316,9 +336,7 @@ public class PluginManager {
     return _pluginsRootDir;
   }
 
-  public static PluginManager get() {
-    return PLUGIN_MANAGER;
-  }
+  public static PluginManager get() { return PLUGIN_MANAGER; }
 
   public String getRecordReaderClassName(String inputFormat) {
     String inputFormatKey = inputFormat.toLowerCase();

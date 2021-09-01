@@ -200,7 +200,8 @@ public abstract class BaseServerStarter implements ServiceStartable {
   }
 
   /**
-   * Fetches the resources to monitor and registers the {@link org.apache.pinot.common.utils.ServiceStatus.ServiceStatusCallback}s
+   * Fetches the resources to monitor and registers the
+   * {@link org.apache.pinot.common.utils.ServiceStatus.ServiceStatusCallback}s
    */
   private void registerServiceStatusHandler() {
     double minResourcePercentForStartup = _serverConf
@@ -548,7 +549,8 @@ public abstract class BaseServerStarter implements ServiceStartable {
       }
       long sleepTimeMs = Math.min(noQueryThresholdMs - noQueryTimeMs, endTimeMs - currentTimeMs);
       LOGGER.info(
-          "Sleep for {}ms as there are still incoming queries (no query time: {}ms is smaller than the threshold: {}ms)",
+          "Sleep for {}ms as there are still incoming queries (no query time: {}ms is smaller than the threshold: "
+              + "{}ms)",
           sleepTimeMs, noQueryTimeMs, noQueryThresholdMs);
       try {
         Thread.sleep(sleepTimeMs);
@@ -700,7 +702,7 @@ public abstract class BaseServerStarter implements ServiceStartable {
    * @param instanceId Id of instance for which to set the system resource info
    * @param systemResourceMap Map containing system resource info
    */
-  private void setInstanceResourceInfo(HelixAdmin helixAdmin, String helixClusterName, String instanceId,
+  protected void setInstanceResourceInfo(HelixAdmin helixAdmin, String helixClusterName, String instanceId,
       Map<String, String> systemResourceMap) {
     InstanceConfig instanceConfig = helixAdmin.getInstanceConfig(helixClusterName, instanceId);
     instanceConfig.getRecord().setMapField(Helix.Instance.SYSTEM_RESOURCE_INFO_KEY, systemResourceMap);

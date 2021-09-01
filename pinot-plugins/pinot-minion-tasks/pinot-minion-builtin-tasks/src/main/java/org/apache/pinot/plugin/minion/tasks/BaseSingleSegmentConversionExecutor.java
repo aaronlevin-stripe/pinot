@@ -94,6 +94,9 @@ public abstract class BaseSingleSegmentConversionExecutor extends BaseTaskExecut
       // Un-tar the segment file
       File segmentDir = new File(tempDataDir, "segmentDir");
       File indexDir = TarGzCompressionUtils.untar(tarredSegmentFile, segmentDir).get(0);
+      if (!FileUtils.deleteQuietly(tarredSegmentFile)) {
+        LOGGER.warn("Failed to delete tarred input segment: {}", tarredSegmentFile.getAbsolutePath());
+      }
 
       // Convert the segment
       File workingDir = new File(tempDataDir, "workingDir");
@@ -104,8 +107,20 @@ public abstract class BaseSingleSegmentConversionExecutor extends BaseTaskExecut
           segmentConversionResult.getSegmentName(), segmentName);
 
       // Tar the converted segment
-      File convertedSegmentTarFile = new File(tempDataDir, segmentName + TarGzCompressionUtils.TAR_GZ_FILE_EXTENSION);
-      TarGzCompressionUtils.createTarGzFile(segmentConversionResult.getFile(), convertedSegmentTarFile);
+      File convertedSegmentDir = segmentConversionResult.getFile();
+      File convertedTarredSegmentFile =
+          new File(tempDataDir, segmentName + TarGzCompressionUtils.TAR_GZ_FILE_EXTENSION);
+      TarGzCompressionUtils.createTarGzFile(convertedSegmentDir, convertedTarredSegmentFile);
+      if (!FileUtils.deleteQuietly(convertedSegmentDir)) {
+        LOGGER.warn("Failed to delete converted segment: {}", convertedSegmentDir.getAbsolutePath());
+      }
+
+      // Delete the input segment after tarring the converted segment to avoid deleting the converted segment when the
+      // conversion happens in-place (converted segment dir is the same as input segment dir). It could also happen when
+      // the conversion is not required, and the input segment dir is returned as the result.
+      if (indexDir.exists() && !FileUtils.deleteQuietly(indexDir)) {
+        LOGGER.warn("Failed to delete input segment: {}", indexDir.getAbsolutePath());
+      }
 
       // Check whether the task get cancelled before uploading the segment
       if (_cancelled) {
@@ -141,7 +156,10 @@ public abstract class BaseSingleSegmentConversionExecutor extends BaseTaskExecut
 
       // Upload the tarred segment
       SegmentConversionUtils.uploadSegment(configs, httpHeaders, parameters, tableNameWithType, segmentName, uploadURL,
-          convertedSegmentTarFile);
+          convertedTarredSegmentFile);
+      if (!FileUtils.deleteQuietly(convertedTarredSegmentFile)) {
+        LOGGER.warn("Failed to delete tarred converted segment: {}", convertedTarredSegmentFile.getAbsolutePath());
+      }
 
       LOGGER.info("Done executing {} on table: {}, segment: {}", taskType, tableNameWithType, segmentName);
       return segmentConversionResult;

@@ -36,8 +36,9 @@ import org.testng.annotations.Test;
 
 public class PluginManagerTest {
 
-  private final String TEST_RECORD_READER_FILE = "TestRecordReader.java";
+  private static final String TEST_RECORD_READER_FILE = "TestRecordReader.java";
 
+<<<<<<< HEAD
   private File tempDir;
 
   private String[] pluginDirPrefixes = { "pinot-plugin-test" };
@@ -45,10 +46,16 @@ public class PluginManagerTest {
   private File[] tempDirs = new File[pluginDirPrefixes.length];
   private String[] jarFiles = new String[pluginDirPrefixes.length];
   private File[] jarDirFiles = new File[pluginDirPrefixes.length];
+=======
+  private File _tempDir;
+  private String _jarFile;
+  private File _jarDirFile;
+>>>>>>> origin/master
 
   @BeforeClass
   public void setup() {
 
+<<<<<<< HEAD
     tempDir = new File(System.getProperty("java.io.tmpdir"), "pinot-plugin-test");
 
     for(int i = 0; i < pluginDirPrefixes.length; i++) {
@@ -64,6 +71,16 @@ public class PluginManagerTest {
     }
     tempDir.delete();
     tempDir.mkdirs();
+=======
+    _tempDir = new File(System.getProperty("java.io.tmpdir"), "pinot-plugin-test");
+    _tempDir.delete();
+    _tempDir.mkdirs();
+
+    String jarDir = _tempDir + "/test-record-reader";
+    _jarFile = jarDir + "/test-record-reader.jar";
+    _jarDirFile = new File(jarDir);
+    _jarDirFile.mkdirs();
+>>>>>>> origin/master
   }
 
   @Test
@@ -72,12 +89,30 @@ public class PluginManagerTest {
     JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
     URL javaFile = Thread.currentThread().getContextClassLoader().getResource(TEST_RECORD_READER_FILE);
     if (javaFile != null) {
-      int compileStatus = compiler.run(null, null, null, javaFile.getFile(), "-d", tempDir.getAbsolutePath());
+      int compileStatus = compiler.run(null, null, null, javaFile.getFile(), "-d", _tempDir.getAbsolutePath());
       Assert.assertTrue(compileStatus == 0, "Error when compiling resource: " + TEST_RECORD_READER_FILE);
 
       URL classFile = Thread.currentThread().getContextClassLoader().getResource("TestRecordReader.class");
 
       if (classFile != null) {
+<<<<<<< HEAD
+=======
+        JarOutputStream jos = new JarOutputStream(new FileOutputStream(_jarFile));
+        jos.putNextEntry(new JarEntry(new File(classFile.getFile()).getName()));
+        jos.write(FileUtils.readFileToByteArray(new File(classFile.getFile())));
+        jos.closeEntry();
+        jos.close();
+
+        PluginManager.get().load("test-record-reader", _jarDirFile);
+
+        RecordReader testRecordReader = PluginManager.get().createInstance("test-record-reader", "TestRecordReader");
+        testRecordReader.init(null, null, null);
+        int count = 0;
+        while (testRecordReader.hasNext()) {
+          GenericRow row = testRecordReader.next();
+          count++;
+        }
+>>>>>>> origin/master
 
         for(int i=0; i < pluginDirPrefixes.length; i++) {
           String jarFile = jarFiles[i];
@@ -158,9 +193,14 @@ public class PluginManagerTest {
 
   @AfterClass
   public void tearDown() {
+<<<<<<< HEAD
     tempDir.delete();
     for(File jarDirFile : jarDirFiles) {
       FileUtils.deleteQuietly(jarDirFile);
     }
+=======
+    _tempDir.delete();
+    FileUtils.deleteQuietly(_jarDirFile);
+>>>>>>> origin/master
   }
 }

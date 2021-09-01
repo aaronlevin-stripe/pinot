@@ -133,6 +133,16 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
   }
 
   @Override
+  public void acquire(Set<String> columns) {
+    _segmentDirectory.acquire(columns);
+  }
+
+  @Override
+  public void release(Set<String> columns) {
+    _segmentDirectory.release(columns);
+  }
+
+  @Override
   public void destroy() {
     String segmentName = getSegmentName();
     LOGGER.info("Trying to destroy segment : {}", segmentName);
@@ -192,9 +202,5 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     } catch (Exception e) {
       throw new RuntimeException("Failed to use PinotSegmentRecordReader to read immutable segment");
     }
-  }
-
-  public Map<String, ColumnIndexContainer> getIndexContainerMap() {
-    return _indexContainerMap;
   }
 }

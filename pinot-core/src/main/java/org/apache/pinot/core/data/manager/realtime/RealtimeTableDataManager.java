@@ -39,8 +39,7 @@ import org.apache.commons.io.FileUtils;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metadata.instance.InstanceZKMetadata;
-import org.apache.pinot.common.metadata.segment.LLCRealtimeSegmentZKMetadata;
-import org.apache.pinot.common.metadata.segment.RealtimeSegmentZKMetadata;
+import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.metrics.ServerGauge;
 import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.common.utils.NamedThreadFactory;
@@ -62,7 +61,6 @@ import org.apache.pinot.segment.local.segment.virtualcolumn.VirtualColumnProvide
 import org.apache.pinot.segment.local.upsert.PartialUpsertHandler;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
 import org.apache.pinot.segment.local.upsert.TableUpsertMetadataManager;
-import org.apache.pinot.segment.local.utils.IngestionUtils;
 import org.apache.pinot.segment.local.utils.SchemaUtils;
 import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.index.ThreadSafeMutableRoaringBitmap;
@@ -89,7 +87,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   // Maintains a map of partitionGroup
   // Ids to semaphores.
   // The semaphore ensures that exactly one PartitionConsumer instance consumes from any stream partition.
-  // In some streams, it's possible that having multiple consumers (with the same consumer name on the same host) consuming from the same stream partition can lead to bugs.
+  // In some streams, it's possible that having multiple consumers (with the same consumer name on the same host)
+  // consuming from the same stream partition can lead to bugs.
   // The semaphores will stay in the hash map even if the consuming partitions move to a different host.
   // We expect that there will be a small number of semaphores, but that may be ok.
   private final Map<Integer, Semaphore> _partitionGroupIdToSemaphoreMap = new ConcurrentHashMap<>();
@@ -115,7 +114,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   private UpsertConfig.Mode _upsertMode;
   private TableUpsertMetadataManager _tableUpsertMetadataManager;
   private List<String> _primaryKeyColumns;
-  private String _timeColumnName;
+  private String _upsertComparisonColumn;
 
   public RealtimeTableDataManager(Semaphore segmentBuildSemaphore) {
     _segmentBuildSemaphore = segmentBuildSemaphore;
@@ -169,12 +168,15 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
         partialUpsertHandler =
             new PartialUpsertHandler(_helixManager, _tableNameWithType, upsertConfig.getPartialUpsertStrategies());
       }
+      UpsertConfig.HashFunction hashFunction = upsertConfig.getHashFunction();
       _tableUpsertMetadataManager =
-          new TableUpsertMetadataManager(_tableNameWithType, _serverMetrics, partialUpsertHandler);
+          new TableUpsertMetadataManager(_tableNameWithType, _serverMetrics, partialUpsertHandler, hashFunction);
       _primaryKeyColumns = schema.getPrimaryKeyColumns();
       Preconditions.checkState(!CollectionUtils.isEmpty(_primaryKeyColumns),
           "Primary key columns must be configured for upsert");
-      _timeColumnName = tableConfig.getValidationConfig().getTimeColumnName();
+      String comparisonColumn = upsertConfig.getComparisonColumn();
+      _upsertComparisonColumn =
+          comparisonColumn != null ? comparisonColumn : tableConfig.getValidationConfig().getTimeColumnName();
     }
 
     if (consumerDir.exists()) {
@@ -249,11 +251,15 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   /*
    * This call comes in one of two ways:
    * For HL Segments:
-   * - We are being directed by helix to own up all the segments that we committed and are still in retention. In this case
-   *   we treat it exactly like how OfflineTableDataManager would -- wrap it into an OfflineSegmentDataManager, and put it
+   * - We are being directed by helix to own up all the segments that we committed and are still in retention. In
+   * this case
+   *   we treat it exactly like how OfflineTableDataManager would -- wrap it into an OfflineSegmentDataManager, and
+   * put it
    *   in the map.
-   * - We are being asked to own up a new realtime segment. In this case, we wrap the segment with a RealTimeSegmentDataManager
-   *   (that kicks off consumption). When the segment is committed we get notified via the notifySegmentCommitted call, at
+   * - We are being asked to own up a new realtime segment. In this case, we wrap the segment with a
+   * RealTimeSegmentDataManager
+   *   (that kicks off consumption). When the segment is committed we get notified via the notifySegmentCommitted
+   * call, at
    *   which time we replace the segment with the OfflineSegmentDataManager
    * For LL Segments:
    * - We are being asked to start consuming from a partition.
@@ -271,9 +277,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
       return;
     }
 
-    RealtimeSegmentZKMetadata realtimeSegmentZKMetadata =
-        ZKMetadataProvider.getRealtimeSegmentZKMetadata(_propertyStore, _tableNameWithType, segmentName);
-    Preconditions.checkNotNull(realtimeSegmentZKMetadata);
+    SegmentZKMetadata segmentZKMetadata =
+        ZKMetadataProvider.getSegmentZKMetadata(_propertyStore, _tableNameWithType, segmentName);
+    Preconditions.checkNotNull(segmentZKMetadata);
     Schema schema = ZKMetadataProvider.getTableSchema(_propertyStore, _tableNameWithType);
     Preconditions.checkNotNull(schema);
 
@@ -286,7 +292,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     boolean isLLCSegment = SegmentName.isLowLevelConsumerSegmentName(segmentName);
     if (segmentDir.exists()) {
       // Segment already exists on disk
-      if (realtimeSegmentZKMetadata.getStatus() == Status.DONE) {
+      if (segmentZKMetadata.getStatus() == Status.DONE) {
         // Metadata has been committed, load the local segment
         try {
           addSegment(ImmutableSegmentLoader.load(segmentDir, indexLoadingConfig, schema));
@@ -310,11 +316,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
         // Metadata has not been committed, delete the local segment
         FileUtils.deleteQuietly(segmentDir);
       }
-    } else if (realtimeSegmentZKMetadata.getStatus() == Status.UPLOADED) {
+    } else if (segmentZKMetadata.getStatus() == Status.UPLOADED) {
       // The segment is uploaded to an upsert enabled realtime table. Download the segment and load.
-      Preconditions.checkArgument(realtimeSegmentZKMetadata instanceof LLCRealtimeSegmentZKMetadata,
-          "Upload segment is not LLC segment");
-      String downloadUrl = ((LLCRealtimeSegmentZKMetadata) realtimeSegmentZKMetadata).getDownloadUrl();
+      String downloadUrl = segmentZKMetadata.getDownloadUrl();
       Preconditions.checkNotNull(downloadUrl, "Upload segment metadata has no download url");
       downloadSegmentFromDeepStore(segmentName, indexLoadingConfig, downloadUrl);
       _logger
@@ -332,9 +336,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     VirtualColumnProviderFactory.addBuiltInVirtualColumnsToSegmentSchema(schema, segmentName);
 
     if (isLLCSegment) {
-      if (realtimeSegmentZKMetadata.getStatus() == Status.DONE) {
-        downloadAndReplaceSegment(segmentName, (LLCRealtimeSegmentZKMetadata) realtimeSegmentZKMetadata,
-            indexLoadingConfig, tableConfig);
+      if (segmentZKMetadata.getStatus() == Status.DONE) {
+        downloadAndReplaceSegment(segmentName, segmentZKMetadata, indexLoadingConfig, tableConfig);
         return;
       }
 
@@ -346,13 +349,12 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
           _tableUpsertMetadataManager != null ? _tableUpsertMetadataManager
               .getOrCreatePartitionManager(partitionGroupId) : null;
       segmentDataManager =
-          new LLRealtimeSegmentDataManager(realtimeSegmentZKMetadata, tableConfig, this, _indexDir.getAbsolutePath(),
+          new LLRealtimeSegmentDataManager(segmentZKMetadata, tableConfig, this, _indexDir.getAbsolutePath(),
               indexLoadingConfig, schema, llcSegmentName, semaphore, _serverMetrics, partitionUpsertMetadataManager);
     } else {
       InstanceZKMetadata instanceZKMetadata = ZKMetadataProvider.getInstanceZKMetadata(_propertyStore, _instanceId);
-      segmentDataManager =
-          new HLRealtimeSegmentDataManager(realtimeSegmentZKMetadata, tableConfig, instanceZKMetadata, this,
-              _indexDir.getAbsolutePath(), indexLoadingConfig, schema, _serverMetrics);
+      segmentDataManager = new HLRealtimeSegmentDataManager(segmentZKMetadata, tableConfig, instanceZKMetadata, this,
+          _indexDir.getAbsolutePath(), indexLoadingConfig, schema, _serverMetrics);
     }
 
     _logger.info("Initialized RealtimeSegmentDataManager - " + segmentName);
@@ -381,7 +383,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     for (String primaryKeyColumn : _primaryKeyColumns) {
       columnToReaderMap.put(primaryKeyColumn, new PinotSegmentColumnReader(immutableSegment, primaryKeyColumn));
     }
-    columnToReaderMap.put(_timeColumnName, new PinotSegmentColumnReader(immutableSegment, _timeColumnName));
+    columnToReaderMap
+        .put(_upsertComparisonColumn, new PinotSegmentColumnReader(immutableSegment, _upsertComparisonColumn));
     int numTotalDocs = immutableSegment.getSegmentMetadata().getTotalDocs();
     int numPrimaryKeyColumns = _primaryKeyColumns.size();
     Iterator<PartitionUpsertMetadataManager.RecordInfo> recordInfoIterator =
@@ -404,18 +407,19 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
               values[i] = value;
             }
             PrimaryKey primaryKey = new PrimaryKey(values);
-            Object timeValue = columnToReaderMap.get(_timeColumnName).getValue(_docId);
-            Preconditions.checkArgument(timeValue instanceof Comparable, "time column shall be comparable");
-            long timestamp = IngestionUtils.extractTimeValue((Comparable) timeValue);
-            return new PartitionUpsertMetadataManager.RecordInfo(primaryKey, _docId++, timestamp);
+            Object upsertComparisonValue = columnToReaderMap.get(_upsertComparisonColumn).getValue(_docId);
+            Preconditions.checkState(upsertComparisonValue instanceof Comparable,
+                "Upsert comparison column: %s must be comparable", _upsertComparisonColumn);
+            return new PartitionUpsertMetadataManager.RecordInfo(primaryKey, _docId++,
+                (Comparable) upsertComparisonValue);
           }
         };
     partitionUpsertMetadataManager.addSegment(immutableSegment, recordInfoIterator);
   }
 
-  public void downloadAndReplaceSegment(String segmentName, LLCRealtimeSegmentZKMetadata llcSegmentMetadata,
+  public void downloadAndReplaceSegment(String segmentName, SegmentZKMetadata segmentZKMetadata,
       IndexLoadingConfig indexLoadingConfig, TableConfig tableConfig) {
-    final String uri = llcSegmentMetadata.getDownloadUrl();
+    String uri = segmentZKMetadata.getDownloadUrl();
     if (!METADATA_URI_FOR_PEER_DOWNLOAD.equals(uri)) {
       try {
         downloadSegmentFromDeepStore(segmentName, indexLoadingConfig, uri);
@@ -504,9 +508,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   /**
    * Replaces a committed HLC REALTIME segment.
    */
-  public void replaceHLSegment(RealtimeSegmentZKMetadata segmentZKMetadata, IndexLoadingConfig indexLoadingConfig)
+  public void replaceHLSegment(SegmentZKMetadata segmentZKMetadata, IndexLoadingConfig indexLoadingConfig)
       throws Exception {
-    ZKMetadataProvider.setRealtimeSegmentZKMetadata(_propertyStore, _tableNameWithType, segmentZKMetadata);
+    ZKMetadataProvider.setSegmentZKMetadata(_propertyStore, _tableNameWithType, segmentZKMetadata);
     File indexDir = new File(_indexDir, segmentZKMetadata.getSegmentName());
     Schema schema = ZKMetadataProvider.getTableSchema(_propertyStore, _tableNameWithType);
     addSegment(ImmutableSegmentLoader.load(indexDir, indexLoadingConfig, schema));

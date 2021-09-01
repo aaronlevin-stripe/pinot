@@ -19,7 +19,6 @@
 package org.apache.pinot.tools.service;
 
 import com.google.common.collect.ImmutableList;
-import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -105,8 +104,9 @@ public class PinotServiceManager {
         String minionStarterClassName = (String) properties
             .getOrDefault(CommonConstants.Helix.CONFIG_OF_PINOT_MINION_STARTABLE_CLASS, MinionStarter.class.getName());
         return startMinion(minionStarterClassName, new PinotConfiguration(properties));
+      default:
+        return null;
     }
-    return null;
   }
 
   public String startController(String controllerStarterClassName, PinotConfiguration controllerConf)
@@ -227,9 +227,19 @@ public class PinotServiceManager {
 
   public void stop() {
     LOGGER.info("Shutting down Pinot Service Manager admin application...");
-    _pinotServiceManagerAdminApplication.stop();
+    if (_pinotServiceManagerAdminApplication != null) {
+      _pinotServiceManagerAdminApplication.stop();
+    }
     LOGGER.info("Deregistering service status handler");
     ServiceStatus.removeServiceStatusCallback(_instanceId);
+  }
+
+  public void stopAll() {
+    LOGGER.info("Shutting down Pinot Service Manager with all running Pinot instances...");
+    for (String instanceId : _runningInstanceMap.keySet()) {
+      stopPinotInstanceById(instanceId);
+    }
+    stop();
   }
 
   public boolean isStarted() {
@@ -276,7 +286,7 @@ public class PinotServiceManager {
   private ServiceStartable getServiceStartable(String serviceStartableClassName) {
     try {
       return (ServiceStartable) Class.forName(serviceStartableClassName).getDeclaredConstructor().newInstance();
-    } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+    } catch (Exception e) {
       throw new RuntimeException("Failed to instantiate ServiceStartable " + serviceStartableClassName, e);
     }
   }
